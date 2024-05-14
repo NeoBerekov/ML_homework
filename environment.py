@@ -48,7 +48,8 @@ class CombatMap:
         self.fuel_map = np.zeros((self.width, self.height))
         self.hp_map = np.zeros((self.width, self.height))
         self.value_map = np.zeros((self.width, self.height))
-        self.is_passable_map = np.ones((self.width, self.height))
+        self.bomber_ammo_map = np.zeros((self.width, self.height))
+        self.bomber_fuel_map = np.zeros((self.width, self.height))
 
     def add_base(self, base):
         if base.is_friendly:
@@ -81,16 +82,14 @@ class CombatMap:
         for key in self.dict_enemy_base:
             self.value_map[key[0]][key[1]] = self.dict_enemy_base[key].value
 
-    def create_is_passable_map(self):
-        for key in self.dict_enemy_base:
-            self.is_passable_map[key[0]][key[1]] = 0
-
-
+    def create_bomber_map(self):
+        for key in self.dict_bomber:
+            self.bomber_ammo_map[key[0]][key[1]] = self.dict_bomber[key].ammo
+            self.bomber_fuel_map[key[0]][key[1]] = self.dict_bomber[key].fuel
 
     def init_env(self, baseList):
         for base in baseList:
             self.add_base(base)
-
 
 
 def create_combat_map_from_file(file_path):
@@ -138,7 +137,7 @@ def create_combat_map_from_file(file_path):
     combat_map.create_fuel_map()
     combat_map.create_hp_map()
     combat_map.create_value_map()
-    combat_map.create_is_passable_map()
+    combat_map.create_bomber_map()
 
     return combat_map
 class BomberBaseEnv(gym.Env):
@@ -148,7 +147,8 @@ class BomberBaseEnv(gym.Env):
         super(BomberBaseEnv, self).__init__()
         self.action_space = spaces.Discrete(9)
         self.combat_map = combat_map
-        self.bomber = list(self.combat_map.dict_bomber.values())[0]
+        self.bomber_list = list(self.combat_map.dict_bomber.values())
+        self.bomber = self.bomber_list[0]
         self.original_combat_map = copy.deepcopy(combat_map)
         self.turn = 0
         self.observation_space = spaces.Box(low=0, high=255,
@@ -171,7 +171,8 @@ class BomberBaseEnv(gym.Env):
             # 移动
             if action == 0:
                 if (self.bomber.y > 0
-                        and self.combat_map.is_passable_map[self.bomber.x][self.bomber.y-1] == 1):
+                        and self.combat_map.value_map[self.bomber.x][self.bomber.y-1] != 0):
+                    # change bomber_ammo_map and bomber_fuel_map
                     self.bomber.y -= 1
                     self.bomber.fuel -= 1
                     self.turn += 1
@@ -180,7 +181,7 @@ class BomberBaseEnv(gym.Env):
                     reward = -10000
             elif action == 1:
                 if (self.bomber.y < self.combat_map.height - 1
-                        and self.combat_map.is_passable_map[self.bomber.x][self.bomber.y+1] == 1):
+                        and self.combat_map.value_map[self.bomber.x][self.bomber.y+1] != 0):
                     self.bomber.y += 1
                     self.bomber.fuel -= 1
                     self.turn += 1
@@ -189,7 +190,7 @@ class BomberBaseEnv(gym.Env):
                     reward = -10000
             elif action == 2:
                 if (self.bomber.x > 0
-                        and self.combat_map.is_passable_map[self.bomber.x-1][self.bomber.y] == 1):
+                        and self.combat_map.value_map[self.bomber.x-1][self.bomber.y] != 0):
                     self.bomber.x -= 1
                     self.bomber.fuel -= 1
                     self.turn += 1
@@ -198,7 +199,7 @@ class BomberBaseEnv(gym.Env):
                     reward = -10000
             elif action == 3:
                 if (self.bomber.x < self.combat_map.width - 1
-                        and self.combat_map.is_passable_map[self.bomber.x+1][self.bomber.y] == 1):
+                        and self.combat_map.value_map[self.bomber.x+1][self.bomber.y] != 0):
                     self.bomber.x += 1
                     self.bomber.fuel -= 1
                     self.turn += 1
@@ -217,7 +218,6 @@ class BomberBaseEnv(gym.Env):
                             if self.combat_map.hp_map[self.bomber.x][self.bomber.y - 1] == 0:
                                 reward += self.combat_map.value_map[self.bomber.x][self.bomber.y - 1]
                                 self.combat_map.value_map[self.bomber.x][self.bomber.y - 1] = 0
-                                self.combat_map.is_passable_map[self.bomber.x][self.bomber.y - 1] = 1
                                 del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)]
                             self.bomber.ammo -= 1
                             reward += 1
@@ -232,7 +232,6 @@ class BomberBaseEnv(gym.Env):
                             if self.combat_map.hp_map[self.bomber.x][self.bomber.y + 1] == 0:
                                 reward += self.combat_map.value_map[self.bomber.x][self.bomber.y + 1]
                                 self.combat_map.value_map[self.bomber.x][self.bomber.y + 1] = 0
-                                self.combat_map.is_passable_map[self.bomber.x][self.bomber.y + 1] = 1
                                 del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)]
                             self.bomber.ammo -= 1
                             reward += 1
@@ -247,7 +246,6 @@ class BomberBaseEnv(gym.Env):
                             if self.combat_map.hp_map[self.bomber.x - 1][self.bomber.y] == 0:
                                 reward += self.combat_map.value_map[self.bomber.x - 1][self.bomber.y]
                                 self.combat_map.value_map[self.bomber.x - 1][self.bomber.y] = 0
-                                self.combat_map.is_passable_map[self.bomber.x - 1][self.bomber.y] = 1
                                 del self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)]
                             self.bomber.ammo -= 1
                             reward += 1
@@ -260,7 +258,6 @@ class BomberBaseEnv(gym.Env):
                             if self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)].hp == 0:
                                 reward += self.combat_map.value_map[self.bomber.x + 1][self.bomber.y]
                                 self.combat_map.value_map[self.bomber.x + 1][self.bomber.y] = 0
-                                self.combat_map.is_passable_map[self.bomber.x + 1][self.bomber.y] = 1
                                 del self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)]
                             self.bomber.ammo -= 1
                             reward += 1
@@ -295,7 +292,8 @@ class BomberBaseEnv(gym.Env):
             else:
                 # 如果不在己方基地地块上，reward为-10000
                 reward = -10000
-        done = self.combat_map.dict_enemy_base == {} or self.bomber.fuel <= 0
+        done = (self.combat_map.dict_enemy_base == {}
+                or (self.bomber.fuel <= 0 and self.combat_map.fuel_map[self.bomber.x][self.bomber.y] == 0))
         if flag_moved:
             # 如果移动了，结束回合，施加一个指数级的负奖励
             self.turn += 1
@@ -323,10 +321,8 @@ class BomberBaseEnv(gym.Env):
         observation = np.zeros((self.combat_map.width, self.combat_map.height, 4))
         observation[:,:,0] = self.combat_map.ammo_map
         observation[:,:,1] = self.combat_map.fuel_map
-        for key in self.combat_map.dict_enemy_base:
-            observation[key[0]][key[1]][2] = self.combat_map.dict_enemy_base[key].hp
-        for key in self.combat_map.dict_enemy_base:
-            observation[key[0]][key[1]][3] = self.combat_map.dict_enemy_base[key].value
+        observation[:,:,2] = self.combat_map.hp_map
+        observation[:,:,3] = self.combat_map.value_map
         return observation
 
     def get_reward(self):

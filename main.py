@@ -11,179 +11,111 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import time
-from environment import Base, Bomber, CombatMap
+from environment import Base, Bomber, CombatMap,BomberBaseEnv,create_combat_map_from_file
 
-class BomberBaseEnv(gym.Env):
-    metadata = {'render.modes': ['human']}
+import copy
 
-    def __init__(self,combat_map):
-        super(BomberBaseEnv, self).__init__()
-        self.action_space = spaces.Discrete(9)
-        self.combat_map = combat_map
-        self.bomber = combat_map.dict_bomber[0]
-        self.original_combat_map = combat_map
-        self.turn = 0
-        self.observation_space = spaces.Box(low=0, high=255,
-                                            shape=(self.combat_map.width, self.combat_map.height, 4),
-                                            dtype=np.uint8)
 
-    def step(self, action):
-        # Execute one time step within the environment
-        # action: 0-8, 0-8对应9个动作
-        # 返回observation, reward, done, info
-        # 0-3: 上下左右
-        # 移动会导致fuel减少，并结束回合
-        # 4-7: 上下左右开火
-        # 射程一格，如果击中敌方基地，敌方基地hp减少，敌方基地hp为0时，敌方基地消失并奖励对应的value；开火会减少ammo，不会结束回合
-        # 8: 在基地补给
-        reward = 0
-        info = {}
-        flag_moved = False
-        if action < 4:
-            # 移动
-            if action == 0:
-                if self.bomber.y > 0 and self.combat_map.is_passable_map[self.bomber.x][self.bomber.y-1] == 1:
-                    self.bomber.y -= 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 1:
-                if self.bomber.y < self.combat_map.height - 1 and self.combat_map.is_passable_map[self.bomber.x][self.bomber.y+1] == 1:
-                    self.bomber.y += 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 2:
-                if self.bomber.x > 0 and self.combat_map.is_passable_map[self.bomber.x-1][self.bomber.y] == 1:
-                    self.bomber.x -= 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 3:
-                if self.bomber.x < self.combat_map.width - 1 and self.combat_map.is_passable_map[self.bomber.x+1][self.bomber.y] == 1:
-                    self.bomber.x += 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-        elif action < 8:
-            # 开火
-            if self.bomber.ammo<=0:
-                reward = -10000
-            else:
-                if action == 4:
-                    if self.bomber.y > 0:
-                        if (self.bomber.x, self.bomber.y - 1) in self.combat_map.dict_enemy_base:
-                            self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)].hp -= 1
-                            if self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)].hp == 0:
-                                reward += self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)].value
-                                del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                    else:
-                        reward = -10000
-                elif action == 5:
-                    if self.bomber.y < self.combat_map.height - 1:
-                        if (self.bomber.x, self.bomber.y + 1) in self.combat_map.dict_enemy_base:
-                            self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)].hp -= 1
-                            if self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)].hp == 0:
-                                reward += self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)].value
-                                del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                    else:
-                        reward = -10000
-                elif action == 6:
-                    if self.bomber.x > 0:
-                        if (self.bomber.x - 1, self.bomber.y) in self.combat_map.dict_enemy_base:
-                            self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)].hp -= 1
-                            if self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)].hp == 0:
-                                reward += self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)].value
-                                del self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                elif action == 7:
-                    if self.bomber.x < self.combat_map.width - 1:
-                        if (self.bomber.x + 1, self.bomber.y) in self.combat_map.dict_enemy_base:
-                            self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)].hp -= 1
-                            if self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)].hp == 0:
-                                reward += self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)].value
-                                del self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
+class DQNWithResnet(nn.Module):
+    # DQN with Resnet34 as feature extractor
+    def __init__(self, h, w, outputs):
+        super(DQNWithResnet, self).__init__()
+        # 用卷积层+resnet提取全局的信息
+        self.conv_enemy_base = nn.Conv2d(2, 1, kernel_size=3, stride=1)
+        self.conv_friendly_base = nn.Conv2d(2, 1, kernel_size=3, stride=1)
+        self.conv_bomber = nn.Conv2d(2, 1, kernel_size=3, stride=1)
+        resnet = torch.hub.load('pytorch/vision:v0.6.0', 'resnet34', pretrained=True)
+        # 去掉最后一层全连接层
+        self.resnet = nn.Sequential(*list(resnet.children())[:-1])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # Adaptive average pooling to get the correct size
+        # 用全连接层提取局部的信息
+        self.fc_nearby = nn.Linear(49 * 6, 2048)
+        # 合并全局信息和局部信息
+        self.fc_global = nn.Linear(512, 2048)
+        self.fc = nn.Linear(2048+2048, outputs)
 
-        else:
-            # 如果在己方基地地块上，补给
-            if (self.bomber.x, self.bomber.y) in self.combat_map.dict_friendly_base:
-                ammo_need = self.bomber.max_ammo - self.bomber.ammo
-                fuel_need = self.bomber.max_fuel - self.bomber.fuel
-                if ammo_need > 0:
-                    ammo_supply = self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].ammo
-                    if ammo_supply >= ammo_need:
-                        self.bomber.ammo = self.bomber.max_ammo
-                        self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].ammo -= ammo_need
-                        reward += ammo_need * 0.1
-                    else:
-                        self.bomber.ammo += ammo_supply
-                        self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].ammo = 0
-                        reward += ammo_supply * 0.1
-                if fuel_need > 0:
-                    fuel_supply = self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].fuel
-                    if fuel_supply >= fuel_need:
-                        self.bomber.fuel = self.bomber.max_fuel
-                        self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].fuel -= fuel_need
-                        reward += fuel_need * 0.1
-                    else:
-                        self.bomber.fuel += fuel_supply
-                        self.combat_map.dict_friendly_base[(self.bomber.x, self.bomber.y)].fuel = 0
-                        reward += fuel_supply * 0.1
-            else:
-                # 如果不在己方基地地块上，reward为-10000
-                reward = -10000
-        done = self.combat_map.dict_enemy_base == {} or self.bomber.fuel <= 0
-        if flag_moved:
-            # 如果移动了，结束回合，施加一个指数级的负奖励
-            self.turn += 1
-            reward -= math.exp(0.1 * self.turn)
-        return self.get_observation(), reward, done, info
+    def forward(self, enemy_base, friendly_base, bomber,bomber_coordinate):
+        # enemy_base[0]: hp_map, enemy_base[1]: value_map
+        # friendly_base[0]: ammo_map, friendly_base[1]: fuel_map
+        # bomber[0]: ammo, bomber[1]: fuel
+        # The input to resnet should be [batch_size, channels, height, width]
 
-    def reset(self):
-        # Reset the state of the environment to an initial state
-        self.__init__(self, self.original_combat_map)
-        pass
+        enemy_global = F.relu(self.conv_enemy_base(enemy_base))
+        friendly_global = F.relu(self.conv_friendly_base(friendly_base))
+        bomber_global = F.relu(self.conv_bomber(bomber))
 
-    def render(self, mode='human'):
-        pass
+        def adjust_to_resnet_input(tensor, target_size=(224, 224)):
+            _, h, w = tensor.shape
+            target_h, target_w = target_size
 
-    def close(self):
-        pass
+            # Calculate padding
+            pad_h = max(0, target_h - h)
+            pad_w = max(0, target_w - w)
 
-    def seed(self, seed=None):
-        pass
+            # Pad the tensor
+            padding = (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2)
+            padded_tensor = F.pad(tensor, padding, mode='constant', value=0)
 
-    def get_observation(self):
-        pass
+            return padded_tensor
 
-    def get_reward(self):
-        pass
+        enemy_global = adjust_to_resnet_input(enemy_global)
+        friendly_global = adjust_to_resnet_input(friendly_global)
+        bomber_global = adjust_to_resnet_input(bomber_global)
 
-    def get_done(self):
-        pass
+        total_global = torch.cat((enemy_global, friendly_global, bomber_global), dim=1).unsqueeze(0)
+        global_features = self.resnet(total_global)
+        global_features = self.avgpool(global_features)
+        global_features = global_features.view(global_features.size(0), -1)  # Flatten
 
-    def get_info(self):
-        pass
+        # 获取bomber的坐标，提取周围7*7的信息，使用padding处理边界情况
+        bomber_x, bomber_y = bomber_coordinate
+
+        def get_padded_area(map, x, y, size=7):
+            padding = size // 2
+            padded_map = F.pad(map, (padding, padding, padding, padding), mode='constant', value=0)
+            return padded_map[:, x:x + size, y:y + size].flatten()
+
+        nearby_enemy_hp = get_padded_area(enemy_base[0], bomber_x, bomber_y)
+        nearby_enemy_value = get_padded_area(enemy_base[1], bomber_x, bomber_y)
+        nearby_friendly_ammo = get_padded_area(friendly_base[0], bomber_x, bomber_y)
+        nearby_friendly_fuel = get_padded_area(friendly_base[1], bomber_x, bomber_y)
+        nearby_bomber_ammo = get_padded_area(bomber[0], bomber_x, bomber_y)
+        nearby_bomber_fuel = get_padded_area(bomber[1], bomber_x, bomber_y)
+
+        nearby_info = torch.cat((
+            nearby_enemy_hp,
+            nearby_enemy_value,
+            nearby_friendly_ammo,
+            nearby_friendly_fuel,
+            nearby_bomber_ammo,
+            nearby_bomber_fuel), dim=0).unsqueeze(0)
+
+        nearby_features = F.relu(self.fc_nearby(nearby_info))
+
+        global_features = F.relu(self.fc_global(global_features))
+        combined_features = torch.cat((global_features, nearby_features), dim=1)
+        return self.fc(combined_features)
+
+
+# Memory Replay
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+
+
+class ReplayMemory:
+    def __init__(self, capacity):
+        self.memory = deque(maxlen=capacity)
+
+    def push(self, *args):
+        """Save a transition"""
+        self.memory.append(Transition(*args))
+
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
+
+# # debugging, check if map creation is correct
+# test_map = create_combat_map_from_file("testcase/test2.txt")
+# print(test_map.enemy_base)
+

@@ -1,5 +1,7 @@
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
+
+import tianshou as ts
 
 import math
 import random
@@ -26,7 +28,7 @@ class Base:
 
 
 class Bomber:
-    def __init__(self, ID, x, y, max_ammo, max_fuel, ammo=0, fuel=0,is_moved=False):
+    def __init__(self, ID, x, y, max_ammo, max_fuel, ammo=0, fuel=0,is_moved=0):
         self.ID = ID
         self.x = x
         self.y = y
@@ -35,6 +37,7 @@ class Bomber:
         self.ammo = ammo
         self.fuel = fuel
         self.is_moved = is_moved
+        self.reward = 0
 
 
 class CombatMap:
@@ -50,6 +53,7 @@ class CombatMap:
         self.value_map = np.zeros((self.width, self.height))
         self.bomber_ammo_map = np.zeros((self.width, self.height))
         self.bomber_fuel_map = np.zeros((self.width, self.height))
+        self.bomber_is_moved_map = np.zeros((self.width, self.height))
 
     def add_base(self, base):
         if base.is_friendly:
@@ -86,6 +90,7 @@ class CombatMap:
         for key in self.dict_bomber:
             self.bomber_ammo_map[key[0]][key[1]] = self.dict_bomber[key].ammo
             self.bomber_fuel_map[key[0]][key[1]] = self.dict_bomber[key].fuel
+            self.bomber_is_moved_map[key[0]][key[1]] = self.dict_bomber[key].is_moved
 
     def init_env(self, baseList):
         for base in baseList:
@@ -140,196 +145,228 @@ def create_combat_map_from_file(file_path):
     combat_map.create_bomber_map()
 
     return combat_map
-class BomberBaseEnv(gym.Env):
-    metadata = {'render.modes': ['human']}
 
-    def __init__(self,combat_map):
-        super(BomberBaseEnv, self).__init__()
+
+class CombatEnv(gym.Env):
+    metadata = {'render.modes': ['human']}
+    def __init__(self, combat_map):
+        super(CombatEnv, self).__init__()
+        self.hp_map = combat_map.hp_map
+        self.value_map = combat_map.value_map * 10 # increase the value to make the reward more significant
+        self.ammo_map = combat_map.ammo_map
+        self.fuel_map = combat_map.fuel_map
+        self.bomber_ammo_map = combat_map.bomber_ammo_map
+        self.bomber_fuel_map = combat_map.bomber_fuel_map
+        self.bomber_is_moved_map = combat_map.bomber_is_moved_map
+        self.agents = list(combat_map.dict_bomber.values())
+        self.n_agents = len(self.agents)
         self.action_space = spaces.Discrete(9)
-        self.combat_map = combat_map
-        self.bomber_list = list(self.combat_map.dict_bomber.values())
-        self.bomber = self.bomber_list[0]
         self.original_combat_map = copy.deepcopy(combat_map)
         self.turn = 0
         self.observation_space = spaces.Box(low=0, high=255,
-                                            shape=(self.combat_map.width, self.combat_map.height, 4),
-                                            dtype=np.uint8)
-
-    def step(self, action):
-        # Execute one time step within the environment
-        # action: 0-8, 0-8对应9个动作
-        # 返回observation, reward, done, info
-        # 0-3: 上下左右
-        # 移动会导致fuel减少，并结束回合
-        # 4-7: 上下左右开火
-        # 射程一格，如果击中敌方基地，敌方基地hp减少，敌方基地hp为0时，敌方基地消失并奖励对应的value；开火会减少ammo，不会结束回合
-        # 8: 在基地补给
-        reward = 0
-        info = {}
-        flag_moved = False
-        if action < 4:
-            # 移动
-            if action == 0:
-                if (self.bomber.y > 0
-                        and self.combat_map.value_map[self.bomber.x][self.bomber.y-1] != 0):
-                    # change bomber_ammo_map and bomber_fuel_map
-                    self.bomber.y -= 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 1:
-                if (self.bomber.y < self.combat_map.height - 1
-                        and self.combat_map.value_map[self.bomber.x][self.bomber.y+1] != 0):
-                    self.bomber.y += 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 2:
-                if (self.bomber.x > 0
-                        and self.combat_map.value_map[self.bomber.x-1][self.bomber.y] != 0):
-                    self.bomber.x -= 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-            elif action == 3:
-                if (self.bomber.x < self.combat_map.width - 1
-                        and self.combat_map.value_map[self.bomber.x+1][self.bomber.y] != 0):
-                    self.bomber.x += 1
-                    self.bomber.fuel -= 1
-                    self.turn += 1
-                    flag_moved = True
-                else:
-                    reward = -10000
-        elif action < 8:
-            # 开火
-            if self.bomber.ammo<=0:
-                reward = -10000
-            else:
-                if action == 4:
-                    if self.bomber.y > 0:
-                        if self.combat_map.value_map[self.bomber.x][self.bomber.y - 1] != 0:
-                            self.combat_map.hp_map[self.bomber.x][self.bomber.y - 1] -= 1
-                            if self.combat_map.hp_map[self.bomber.x][self.bomber.y - 1] == 0:
-                                reward += self.combat_map.value_map[self.bomber.x][self.bomber.y - 1]
-                                self.combat_map.value_map[self.bomber.x][self.bomber.y - 1] = 0
-                                del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y - 1)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                    else:
-                        reward = -10000
-                elif action == 5:
-                    if self.bomber.y < self.combat_map.height - 1:
-                        if self.combat_map.value_map[self.bomber.x][self.bomber.y + 1] != 0:
-                            self.combat_map.hp_map[self.bomber.x][self.bomber.y + 1] -= 1
-                            if self.combat_map.hp_map[self.bomber.x][self.bomber.y + 1] == 0:
-                                reward += self.combat_map.value_map[self.bomber.x][self.bomber.y + 1]
-                                self.combat_map.value_map[self.bomber.x][self.bomber.y + 1] = 0
-                                del self.combat_map.dict_enemy_base[(self.bomber.x, self.bomber.y + 1)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                    else:
-                        reward = -10000
-                elif action == 6:
-                    if self.bomber.x > 0:
-                        if self.combat_map.value_map[self.bomber.x - 1][self.bomber.y] != 0:
-                            self.combat_map.hp_map[self.bomber.x - 1][self.bomber.y] -= 1
-                            if self.combat_map.hp_map[self.bomber.x - 1][self.bomber.y] == 0:
-                                reward += self.combat_map.value_map[self.bomber.x - 1][self.bomber.y]
-                                self.combat_map.value_map[self.bomber.x - 1][self.bomber.y] = 0
-                                del self.combat_map.dict_enemy_base[(self.bomber.x - 1, self.bomber.y)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-                elif action == 7:
-                    if self.bomber.x < self.combat_map.width - 1:
-                        if self.combat_map.value_map[self.bomber.x + 1][self.bomber.y] != 0:
-                            self.combat_map.hp_map[self.bomber.x + 1][self.bomber.y] -= 1
-                            if self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)].hp == 0:
-                                reward += self.combat_map.value_map[self.bomber.x + 1][self.bomber.y]
-                                self.combat_map.value_map[self.bomber.x + 1][self.bomber.y] = 0
-                                del self.combat_map.dict_enemy_base[(self.bomber.x + 1, self.bomber.y)]
-                            self.bomber.ammo -= 1
-                            reward += 1
-                        else:
-                            reward = -10000
-
-        else:
-            # 如果在己方基地地块上，补给
-            if (self.bomber.x, self.bomber.y) in self.combat_map.dict_friendly_base:
-                ammo_need = self.bomber.max_ammo - self.bomber.ammo
-                fuel_need = self.bomber.max_fuel - self.bomber.fuel
-                if ammo_need > 0:
-                    ammo_supply = self.combat_map.ammo_map[(self.bomber.x, self.bomber.y)]
-                    if ammo_supply >= ammo_need:
-                        self.bomber.ammo = self.bomber.max_ammo
-                        self.combat_map.ammo_map[(self.bomber.x, self.bomber.y)] -= ammo_need
-                        reward += ammo_need * 0.1
-                    else:
-                        self.bomber.ammo += ammo_supply
-                        self.combat_map.ammo_map[(self.bomber.x, self.bomber.y)] = 0
-                        reward += ammo_supply * 0.1
-                if fuel_need > 0:
-                    fuel_supply = self.combat_map.fuel_map[(self.bomber.x, self.bomber.y)]
-                    if fuel_supply >= fuel_need:
-                        self.bomber.fuel = self.bomber.max_fuel
-                        self.combat_map.fuel_map[(self.bomber.x, self.bomber.y)] -= fuel_need
-                        reward += fuel_need * 0.1
-                    else:
-                        self.bomber.fuel += fuel_supply
-                        self.combat_map.fuel_map[(self.bomber.x, self.bomber.y)] = 0
-                        reward += fuel_supply * 0.1
-            else:
-                # 如果不在己方基地地块上，reward为-10000
-                reward = -10000
-        done = (self.combat_map.dict_enemy_base == {}
-                or (self.bomber.fuel <= 0 and self.combat_map.fuel_map[self.bomber.x][self.bomber.y] == 0))
-        if flag_moved:
-            # 如果移动了，结束回合，施加一个指数级的负奖励
-            self.turn += 1
-            reward -= math.exp(0.1 * self.turn)-1
-        return self.get_observation(), reward, done, info
+                                            shape=(combat_map.width, combat_map.height, 7),
+                                            dtype=np.uint16)
 
     def reset(self):
-        # Reset the state of the environment to an initial state
-        self.combat_map = copy.deepcopy(self.original_combat_map)
-        self.bomber = self.combat_map.dict_bomber[0]
+        combat_map = copy.deepcopy(self.original_combat_map)
+        self.hp_map = combat_map.hp_map
+        self.value_map = combat_map.value_map * 10
+        self.ammo_map = combat_map.ammo_map
+        self.fuel_map = combat_map.fuel_map
+        self.bomber_ammo_map = combat_map.bomber_ammo_map
+        self.bomber_fuel_map = combat_map.bomber_fuel_map
+        self.bomber_is_moved_map = combat_map.bomber_is_moved_map
+        self.agents = list(combat_map.dict_bomber.values())
+        self.n_agents = len(self.agents)
         self.turn = 0
-        return self.get_observation()
+        return self._get_obs()
 
     def render(self, mode='human'):
-        pass
+        grid = np.full((self.original_combat_map.width, self.original_combat_map.height), '·'
+                       , dtype='<U1')
+
+        # Mark bases
+        for (x, y), base in self.original_combat_map.dict_friendly_base.items():
+            grid[x, y] = '*'
+        for (x, y), base in self.original_combat_map.dict_enemy_base.items():
+            grid[x, y] = '#'
+
+        # Mark bombers
+        for agent in self.agents:
+            grid[agent.x, agent.y] = 'Δ'
+
+        for row in grid:
+            print(' '.join(row))
+        print()
+
+    def _move(self,agent_idx,direction): # return if the move is valid
+        agent = self.agents[agent_idx]
+        if agent.is_moved == 1:
+            return False
+        if direction == 0:  # move up
+            new_pos = [agent.x, agent.y + 1]
+        elif direction == 1:  # move down
+            new_pos = [agent.x, agent.y - 1]
+        elif direction == 2:  # move left
+            new_pos = [agent.x - 1, agent.y]
+        else:  # move right
+            new_pos = [agent.x + 1, agent.y]
+
+        if (new_pos[0] < 0
+                or new_pos[0] >= self.original_combat_map.width
+                or new_pos[1] < 0
+                or new_pos[1] >= self.original_combat_map.height):
+            return False
+
+        if (self.value_map[new_pos[0]][new_pos[1]] != 0
+                or self.bomber_ammo_map[new_pos[0]][new_pos[1]] != 0):
+            # which means there is an enemy base or another bomber
+            return False
+        self.bomber_is_moved_map[agent.x][agent.y] = 0
+        self.bomber_ammo_map[new_pos[0]][new_pos[1]] = self.bomber_ammo_map[agent.x][agent.y]
+        self.bomber_fuel_map[new_pos[0]][new_pos[1]] = self.bomber_fuel_map[agent.x][agent.y]
+        self.bomber_ammo_map[agent.x][agent.y] = 0
+        self.bomber_fuel_map[agent.x][agent.y] = 0
+        agent.x = new_pos[0]
+        agent.y = new_pos[1]
+        agent.fuel -= 1
+        agent.is_moved = 1
+        self.bomber_is_moved_map[agent.x][agent.y] = 1
+        return True
+
+    def _fire(self,agent_idx,direction): # return if the fire is valid and the reward
+        agent = self.agents[agent_idx]
+        if agent.ammo == 0:
+            return False , -10
+        x = agent.x
+        y = agent.y
+        if direction == 0:  # fire up
+            new_pos = [x, y + 1]
+        elif direction == 1:  # fire down
+            new_pos = [x, y - 1]
+        elif direction == 2:  # fire left
+            new_pos = [x - 1, y]
+        else:  # fire right
+            new_pos = [x + 1, y]
+
+        if (new_pos[0] < 0
+                or new_pos[0] >= self.original_combat_map.width
+                or new_pos[1] < 0
+                or new_pos[1] >= self.original_combat_map.height):
+            return False , -10
+
+        if self.value_map[new_pos[0]][new_pos[1]] == 0:
+            return False , -10
+
+        self.hp_map[new_pos[0]][new_pos[1]] -= 1
+        if self.hp_map[new_pos[0]][new_pos[1]] == 0:
+            reward = self.value_map[new_pos[0]][new_pos[1]]
+            self.value_map[new_pos[0]][new_pos[1]] = 0
+            return True , reward
+        else:
+            return True , 1
+
+    def _supply(self,agent_idx): # return if the supply is valid and reward
+        agent = self.agents[agent_idx]
+        x = agent.x
+        y = agent.y
+        reward = 0
+        ammo_need = agent.max_ammo - agent.ammo
+        fuel_need = agent.max_fuel - agent.fuel
+        if ammo_need == 0 and fuel_need == 0:
+            return False , -10
+        if (x, y) in self.original_combat_map.dict_friendly_base:
+            if ammo_need > 0:
+                ammo_supply = self.ammo_map[x][y]
+                if ammo_supply >= ammo_need:
+                    agent.ammo = agent.max_ammo
+                    self.ammo_map[x][y] -= ammo_need
+                    reward += ammo_need
+                else:
+                    agent.ammo += ammo_supply
+                    self.ammo_map[x][y] = 0
+                    reward += ammo_supply
+            if fuel_need > 0:
+                fuel_supply = self.fuel_map[x][y]
+                if fuel_supply >= fuel_need:
+                    agent.fuel = agent.max_fuel
+                    self.fuel_map[x][y] -= fuel_need
+                    reward += fuel_need
+                else:
+                    agent.fuel += fuel_supply
+                    self.fuel_map[x][y] = 0
+                    reward += fuel_supply
+            return True,reward
+        else:
+            return False,-10
+
+
+    def step(self,actions):
+        # actions is an array of actions for each agent
+        assert len(actions) == self.n_agents
+        rewards = np.zeros(self.n_agents)
+        done = False
+        for i in range(self.n_agents):
+            if actions[i] == 0:
+                if self._move(i,0):
+                    rewards[i] += 0
+            elif actions[i] == 1:
+                if self._move(i,1):
+                    rewards[i] += 0
+            elif actions[i] == 2:
+                if self._move(i,2):
+                    rewards[i] += 0
+            elif actions[i] == 3:
+                if self._move(i,3):
+                    rewards[i] += 0
+            elif actions[i] == 4:
+                valid , reward = self._fire(i,0)
+                rewards[i] += reward
+            elif actions[i] == 5:
+                valid , reward = self._fire(i,1)
+                rewards[i] += reward
+            elif actions[i] == 6:
+                valid , reward = self._fire(i,2)
+                rewards[i] += reward
+            elif actions[i] == 7:
+                valid , reward = self._fire(i,3)
+                rewards[i] += reward
+            elif actions[i] == 8:
+                valid , reward = self._supply(i)
+                rewards[i] += reward
+            else:
+                rewards[i] += -100000
+
+        if all(agent.is_moved == 1 for agent in self.agents):
+            # 在回合结束时，检查done情况
+            for agent in self.agents:
+                agent.is_moved = 0
+            self.turn += 1
+            done = self._check_done()
+
+        observation = self._get_obs()
+
+        unmoved_agents = [agent for agent in self.agents if agent.is_moved == 0]
+        # Additional info
+        info = {"turn": self.turn,"actions":actions,"unmoved_agents":unmoved_agents}
+
+        return observation, rewards, done, info
+
+    def _get_obs(self):
+        obs = np.zeros((self.original_combat_map.width, self.original_combat_map.height, 7), dtype=np.uint16)
+        for agent in self.agents:
+            obs[agent.x, agent.y, 0] = agent.ammo
+            obs[agent.x, agent.y, 1] = agent.fuel
+            obs[agent.x, agent.y, 2] = agent.is_moved
+        obs[:, :, 3] = self.hp_map
+        obs[:, :, 4] = self.value_map
+        obs[:, :, 5] = self.ammo_map
+        obs[:, :, 6] = self.fuel_map
+        return obs
+
+    def _check_done(self):
+        # 所有敌人基地被摧毁，或者所有飞机都没油了
+        return np.all(self.hp_map == 0) or np.all(self.bomber_fuel_map == 0)
 
     def close(self):
-        pass
-
-    def seed(self, seed=None):
-        pass
-
-    def get_observation(self):
-        # 返回4个通道的图像，分别是ammo_map, fuel_map, hp_map, value_map
-        observation = np.zeros((self.combat_map.width, self.combat_map.height, 4))
-        observation[:,:,0] = self.combat_map.ammo_map
-        observation[:,:,1] = self.combat_map.fuel_map
-        observation[:,:,2] = self.combat_map.hp_map
-        observation[:,:,3] = self.combat_map.value_map
-        return observation
-
-    def get_reward(self):
-        pass
-
-    def get_done(self):
-        pass
-
-    def get_info(self):
         pass

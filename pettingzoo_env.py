@@ -1,7 +1,9 @@
+import functools
+
 import numpy as np
 from pettingzoo.utils import AECEnv,agent_selector,wrappers
 from gymnasium import spaces
-from pettingzoo.test import api_test
+from customized_test import api_test
 from pettingzoo.classic import tictactoe_v3
 
 import copy
@@ -32,21 +34,23 @@ class CustomMilitaryEnv(AECEnv):
         self.map_size = map_size  # 地图大小 (rows, cols)
         self.blue_bases = blue_bases  # 蓝方基地信息
         self.red_bases = red_bases  # 红方基地信息
-        self.jets = jets  # 战斗机信息
-        self.orginal_jets = copy.deepcopy(jets)
+        self.jets = copy.deepcopy(jets) # 战斗机信息
+        self.original_jets = copy.deepcopy(jets)
         self.agents = [f"jet_{i}" for i in range(len(jets))]
         self.possible_agents = self.agents[:]
+        self.rewards = {agent: 0 for agent in self.agents}
+
 
         self.observation_spaces = {
             agent: spaces.Dict({
                 "observation": spaces.Box(low=-1.0, high=5000.0, shape=(8,map_size[0],map_size[1]), dtype=np.float32),
 
-                "action_mask": spaces.MultiBinary(10),
+                "action_mask": spaces.MultiBinary(11),
             }) for agent in self.agents
         }
         self.action_spaces = {
-            agent: spaces.Discrete(10) for agent in self.agents
-            # 0: 上, 1: 下, 2: 左, 3: 右, 4: 向上攻击, 5: 向下攻击, 6: 向左攻击, 7: 向右攻击, 8: 补给燃油, 9: 补给弹药
+            agent: spaces.Discrete(11) for agent in self.agents
+            # 0: 上, 1: 下, 2: 左, 3: 右, 4: 向上攻击, 5: 向下攻击, 6: 向左攻击, 7: 向右攻击, 8: 补给燃油, 9: 补给弹药，10：无动作
         }
 
         self.state = np.zeros((8,map_size[0],map_size[1]),dtype=np.float32)  # 初始化环境状态
@@ -58,12 +62,15 @@ class CustomMilitaryEnv(AECEnv):
         # 初始化累积奖励、结束标志和信息字典
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
+        self.temp_rewards= {agent: 0 for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
         self._reset_environment()
-        self.render()
 
+    @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
         return self.action_spaces[agent]
+
+    @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
         if agent not in self.observation_spaces:
             raise ValueError(f"Unknown agent: {agent}")
@@ -71,7 +78,7 @@ class CustomMilitaryEnv(AECEnv):
 
     def _reset_environment(self):
         self.state = np.zeros((8,map_size[0],map_size[1]), dtype=np.float32)
-        self.jets = copy.deepcopy(self.orginal_jets)
+        self.jets = copy.deepcopy(self.original_jets)
         # 设置蓝方基地信息
         for base in self.blue_bases:
             assert 0 <= base[0] < self.map_size[0], "蓝方基地行索引超出范围"
@@ -100,48 +107,53 @@ class CustomMilitaryEnv(AECEnv):
     def reset(self,seed=None,options=None):
         self.turn = 0
         self.agents = self.possible_agents[:]
-        self.jets = copy.deepcopy(self.orginal_jets)
+        self.jets = copy.deepcopy(self.original_jets)
         self._reset_environment()
         self.agent_selector.reinit(self.agents)
         self.agent_selector.reset()
         self.agent_selection = self.agent_selector.reset()
 
         # 重置累积奖励、结束标志和信息字典
-        self._cumulative_rewards = self._convert_to_dict([0.0 for _ in self.possible_agents])
+        self._cumulative_rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
+        self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
         self.rewards = {agent: 0 for agent in self.agents}
+        self.temp_rewards = {agent: 0 for agent in self.agents}
 
-        return {agent: self.state for agent in self.agents}
 
     def observe(self, agent):
-        observation = {"observation": self.state, "action_mask": np.ones(10, dtype=np.int8)}
+        observation = {"observation": self.state, "action_mask": np.ones(11, dtype=np.int8)}
         return observation
 
     def step(self, action):
+
+        if np.all(self.state[RED_BASE_DEFENSE] == 0):
+            print("All red bases have been destroyed, you are the winner!")
+            # print(self.infos)
+            self.terminations = {agent: True for agent in self.agents}
+        elif len(self.agents) == 0:
+            print("All jets have run out of fuel, you are the loser!")
+            self.truncations = {agent: True for agent in self.agents}
+
+        if (self.terminations[self.agent_selection]
+                or self.truncations[self.agent_selection]):
+            action = None
+            # print(f"{self.agent_selection} has been terminated or truncated")
+            self._was_dead_step(action)
+
+            # else:
+            #     # print("All jets have been removed from the map")
+            #     self.agent_selection = None
+            return
+
         agent = self.agent_selection
         agent_index = self.agents.index(agent)
         jet = self.jets[agent_index]
-
+        self._cumulative_rewards[agent] = 0
         reward = 0.0
 
-        # 如果一个战斗机已经移动过，燃油为0，且不在有燃油的基地上，则剔除该战斗机
-        if jet[FUEL] <= 0 and jet[CAN_MOVE] == False and self.state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] <= 0:
-            self.terminations[agent] = True
-            self.agents.remove(agent)
-            self.agent_selector.reinit(self.agents)
-            self.agent_selector.reset()
 
-        # 如果地图上所有的红方基地都被摧毁，则游戏胜利
-        if np.all(self.state[RED_BASE_DEFENSE] == 0):
-            self.terminations = {agent: True for agent in self.agents}
-            print("All red bases have been destroyed, you are the winner!")
-            self.reset()
-
-        # 如果全局turn超过time_limit，则结束游戏
-        if self.turn >= self.time_limit:
-            self.truncations = {agent: True for agent in self.agents}
-            self.reset()
 
         # 处理动作逻辑（移动、攻击、补给等）
         if action == 0:  # 向上移动
@@ -202,33 +214,60 @@ class CustomMilitaryEnv(AECEnv):
                 reward += self._supply_missiles(jet,agent)
             else:
                 reward -= 100
+        elif action == 10:  # 无动作
+            reward = 0
+
+        # self.temp_rewards[agent] += reward
+        # if self.agent_selector.is_last():
+        #     self.rewards = self.temp_rewards
+        #     self.temp_rewards = {agent: 0 for agent in self.agents}
 
 
+        # # 如果一个战斗机已经移动过，燃油为0，且不在有燃油的基地上，则剔除该战斗机
+        # if jet[FUEL] <= 0 and jet[CAN_MOVE] == False and self.state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] <= 0:
+        #     self.truncations[agent] = True
+        #     # print(f"{agent} has run out of fuel and has been removed from the map")
 
-        # info中包含回合数，行动飞机ID，所采取的行动，行动获得的奖励
-        info = {"turn": self.turn, "agent": agent, "action": action, "rew": reward}
-        self.rewards = {agent: 0 for agent in self.agents}
-        self.rewards[agent] = reward
-        self._cumulative_rewards[agent] = 0
-        print(info)
-        print(f"jet1 position: {self.jets[0]}, jet2 position: {self.jets[1]}, jet3 position: {self.jets[2]}")
-        self._accumulate_rewards()
-        print(self._cumulative_rewards)
+        # 如果超过回合数限制，则所有战斗机都被剔除
+        if self.turn >= self.time_limit:
+            self.truncations = {agent: True for agent in self.agents}
+            # print("Time limit exceeded, all jets have been removed from the map")
 
+        info = {"turn": self.turn, "action": action, "rew": reward,"fuel": jet[FUEL],"missile": jet[MISSILE]}
 
+        if np.all(self.state[RED_BASE_DEFENSE] == 0):
+            # print("All red bases have been destroyed, you are the winner!")
+            self.terminations = {agent: True for agent in self.agents}
+
+        elif len(self.agents) == 0:
+            # print("All jets have run out of fuel, you are the loser!")
+            self.truncations = {agent: True for agent in self.agents}
 
         # 如果所有战斗机都已经移动过，则进入下一个回合，恢复所有战斗机的移动状态
         if all(jet[4] == False for jet in self.jets):
-            print("All jets have moved, next turn")
+            # print("All jets have moved, next turn")
             self.turn += 1
             # 使得所有战斗机都能移动
             for jet in self.jets:
                 jet[4] = True
                 # 在地图上标记所有战斗机都能移动
                 self.state[JET_NOT_MOVED,jet[0],jet[1]] += 1
-        self.infos[agent] = info
-        self.render()
-        self.agent_selection = self.agent_selector.next()
+
+        if agent in self.infos.keys():
+            self.infos[agent] = info
+        # print(f"available agents: {self.agents}")
+        # if(len(self.agents)<len(self.possible_agents)):
+        #     print("agent removed")
+        # print(f"turn: {self.turn}, agent: {agent}, fuel：{jet[FUEL]},action: {action}, reward: {reward}")
+        # print(f"Info: {self.infos}")
+        # self.render()
+        if len(self.agent_selector.agent_order):
+            self.agent_selection = self.agent_selector.next()
+        self._clear_rewards()
+        self.rewards[agent] = reward
+        self._accumulate_rewards()
+        self._deads_step_first()
+
 
 
 
@@ -338,6 +377,8 @@ class CustomMilitaryEnv(AECEnv):
                 else:
                     print(".", end=" ")
             print()
+        print()
+
 
     def close(self):
         pass
@@ -366,9 +407,11 @@ jets = [
     [6, 6, 90, 40,True,900,400]
 ]
 
-# 创建环境
-env = CustomMilitaryEnv(map_size, blue_bases, red_bases, jets)
-# 测试环境API
-api_test(env)
+for i in range(100):
+    print("Episode: ", i)
+    # 创建环境
+    env = CustomMilitaryEnv(map_size, blue_bases, red_bases, jets)
+    # 测试环境API
+    api_test(env)
 
 

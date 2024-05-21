@@ -624,3 +624,5 @@ def api_test(env, num_cycles=1000, verbose_progress=False):
         warnings.warn("Environment has not defined a render() method")
 
     print("Passed API test")
+
+    return True

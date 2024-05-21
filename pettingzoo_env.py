@@ -1,6 +1,7 @@
 import functools
 
 import numpy as np
+import random
 from pettingzoo.utils import AECEnv,agent_selector,wrappers
 from gymnasium import spaces
 from customized_test import api_test
@@ -215,7 +216,8 @@ class CustomMilitaryEnv(AECEnv):
             else:
                 reward -= 100
         elif action == 10:  # 无动作
-            reward = 0
+            if jet[FUEL] == 0:
+                reward -= 10
 
         # self.temp_rewards[agent] += reward
         # if self.agent_selector.is_last():
@@ -223,9 +225,9 @@ class CustomMilitaryEnv(AECEnv):
         #     self.temp_rewards = {agent: 0 for agent in self.agents}
 
 
-        # # 如果一个战斗机已经移动过，燃油为0，且不在有燃油的基地上，则剔除该战斗机
         # if jet[FUEL] <= 0 and jet[CAN_MOVE] == False and self.state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] <= 0:
         #     self.truncations[agent] = True
+        #     # 如果一个战斗机已经移动过，燃油为0，且不在有燃油的基地上，则剔除该战斗机
         #     # print(f"{agent} has run out of fuel and has been removed from the map")
 
         # 如果超过回合数限制，则所有战斗机都被剔除
@@ -237,6 +239,7 @@ class CustomMilitaryEnv(AECEnv):
 
         if np.all(self.state[RED_BASE_DEFENSE] == 0):
             # print("All red bases have been destroyed, you are the winner!")
+            print("last hit by: ", agent)
             self.terminations = {agent: True for agent in self.agents}
 
         elif len(self.agents) == 0:
@@ -408,10 +411,14 @@ jets = [
 ]
 
 for i in range(100):
+    random.seed(i)
+    np.random.seed(i)
     print("Episode: ", i)
     # 创建环境
     env = CustomMilitaryEnv(map_size, blue_bases, red_bases, jets)
     # 测试环境API
-    api_test(env)
+    if not api_test(env):
+        print("Failed")
+        break
 
 

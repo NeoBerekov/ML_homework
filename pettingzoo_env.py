@@ -109,9 +109,9 @@ class CustomMilitaryEnv(AECEnv):
     def _convert_to_dict(self, list_of_rew):
         return dict(zip(self.possible_agents, list_of_rew))
     def reset(self,seed=None,options=None):
-        print()
-        print("reset")
-        print()
+        # print()
+        # print("reset")
+        # print()
         self.turn = 0
         self.agents = self.possible_agents[:]
         self.jets = copy.deepcopy(self.original_jets)
@@ -222,17 +222,17 @@ class CustomMilitaryEnv(AECEnv):
         info = {"turn": self.turn, "action": action, "rew": reward,"fuel": jet[FUEL],"missile": jet[MISSILE]}
 
         if np.all(self.state[RED_BASE_DEFENSE] == 0):
-            print(f"Turn:{self.turn},All red bases have been destroyed, you are the winner!")
-            print("last hit by: ", agent)
-            self.render()
+            # print(f"Turn:{self.turn},All red bases have been destroyed, you are the winner!")
+            # print("last hit by: ", agent)
+            # self.render()
             self.terminations = {agent: True for agent in self.agents}
 
         elif all(jet[FUEL] == 0
                  and jet[CAN_MOVE] == False
                  and self.state[BLUE_BASE_FUEL,jet[ROW],jet[COL]] <= 0
                  for jet in self.jets):
-            print(f"Turn:{self.turn},All jets have run out of fuel, you are the loser!")
-            self.render()
+            # print(f"Turn:{self.turn},All jets have run out of fuel, you are the loser!")
+            # self.render()
             self.truncations = {agent: True for agent in self.agents}
 
         # 如果所有战斗机都已经移动过，则进入下一个回合，恢复所有战斗机的移动状态

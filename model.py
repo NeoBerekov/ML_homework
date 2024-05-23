@@ -17,6 +17,8 @@ from torch import nn
 #
 #                 "missile": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32)
 #             }) for agent in self.agents
+
+# 直接运行这个文件可以测试
 class NetForRainbow(nn.Module):
     def __init__(self,
                  map_depth,map_size,
@@ -24,6 +26,18 @@ class NetForRainbow(nn.Module):
                  action_dim = 11,
                  num_atoms = 51,
                  device = "cpu"):
+        """
+            Initialize the neural network.
+
+            Args:
+                map_depth (int): The depth of the map, which corresponds to the number of channels in the input tensor.
+                map_size (tuple): A tuple representing the size of the map (height, width).
+                state (optional): An optional argument representing the state of the agent.
+                action_dim (int, optional): The dimension of the action space. Defaults to 11.
+                num_atoms (int, optional): The number of atoms for the distributional Q-value. Defaults to 51.
+                device (str, optional): The device to run the model on. Defaults to "cpu".
+            """
+
         super().__init__()
         if state is not None:
             self.state = state
@@ -48,6 +62,25 @@ class NetForRainbow(nn.Module):
         )
 
     def forward(self, obs,state=None,info=None):
+        """
+        Forward pass of the neural network.
+
+        Args:
+            obs (dict): A dictionary containing the observation from the environment.
+                        It should have the following keys:
+                        - "observation": a numpy array or torch tensor representing the environment state.
+                        - "position": a numpy array or torch tensor representing the agent's position.
+                        - "fuel": a numpy array or torch tensor representing the agent's fuel level.
+                        - "missile": a numpy array or torch tensor representing the agent's missile count.
+            state (optional): An optional argument representing the state of the agent.
+            info (optional): An optional argument representing additional information about the agent.
+
+        Returns:
+            logits (torch.Tensor): The output of the decision layer of the network.
+                                   It represents the distribution over actions for the agent.
+            state: The state of the agent.(unused)
+            info: Additional information about the agent.(unused)
+        """
         observation = obs["observation"]
         position = obs["position"]
         fuel = obs["fuel"]
@@ -61,6 +94,7 @@ class NetForRainbow(nn.Module):
         if not isinstance(missile, torch.Tensor):
             missile = torch.tensor(missile, dtype=torch.float32)
         # 卷积层处理观测地图
+        # todo: 增加一个通道，软编码地图的不可移动区块（如地方基地、边界外等）
         map_obs = self.conv(observation)
         batch_size = map_obs.size(0)
         map_obs = map_obs.view(batch_size, 64, 3 * 3).permute(2, 0, 1)  # 变换为(seq_length, batch_size, embed_dim)

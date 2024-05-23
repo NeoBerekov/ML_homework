@@ -8,6 +8,9 @@ from customized_test import api_test
 
 import copy
 
+# 直接点运行能跑100轮api测试
+
+# 定义地图深度对应的信息
 JET_POSITION = 0
 JET_NOT_MOVED = 1
 JET_FUEL = 2
@@ -17,6 +20,7 @@ BLUE_BASE_MISSILE = 5
 RED_BASE_DEFENSE = 6
 RED_BASE_VALUE = 7
 
+# 定义战斗机信息对应的索引
 ROW = 0
 COL = 1
 FUEL = 2
@@ -24,6 +28,19 @@ MISSILE = 3
 CAN_MOVE = 4
 MAX_FUEL = 5
 MAX_MISSILE = 6
+
+# 0: 上, 1: 下, 2: 左, 3: 右, 4: 向上攻击, 5: 向下攻击, 6: 向左攻击, 7: 向右攻击, 8: 补给燃油, 9: 补给弹药，10：无动作
+ACT_MOVE_UP = 0
+ACT_MOVE_DOWN = 1
+ACT_MOVE_LEFT = 2
+ACT_MOVE_RIGHT = 3
+ACT_ATTACK_UP = 4
+ACT_ATTACK_DOWN = 5
+ACT_ATTACK_LEFT = 6
+ACT_ATTACK_RIGHT = 7
+ACT_SUPPLY_FUEL = 8
+ACT_SUPPLY_MISSILES = 9
+ACT_NO_OP = 10
 
 class CustomMilitaryEnv(AECEnv):
     def __init__(self, map_size, blue_bases, red_bases, jets):
@@ -128,8 +145,8 @@ class CustomMilitaryEnv(AECEnv):
         self.rewards = {agent: 0 for agent in self.agents}
         self.temp_rewards = {agent: 0 for agent in self.agents}
 
-
     def observe(self, agent):
+        # 目前是软控制飞机的合法动作，要是想硬控制可以调action_mask，在main里的TerminateIllegalWrapper会根据这个mask来判断是否合法
         observation = {"observation": self.state,
                        "action_mask": np.ones(11, dtype=np.int8),
                        "position": self.jets[self.agents.index(agent)][:2],
@@ -142,6 +159,7 @@ class CustomMilitaryEnv(AECEnv):
         # print(f"turn: {self.turn}, agent: {self.agent_selection}, action: {action}")
         if (self.terminations[self.agent_selection]
                 or self.truncations[self.agent_selection]):
+            # 如果当前agent已经终止或被截断，则直接跳过
             action = None
             # print(f"{self.agent_selection} has been terminated or truncated")
             self._was_dead_step(action)
@@ -158,7 +176,7 @@ class CustomMilitaryEnv(AECEnv):
         # 处理动作逻辑（移动、攻击、补给等）
         if action == 0:  # 向上移动
             new_position = (jet[0] - 1, jet[1])
-            if self._is_valid_move(new_position,jet):
+            if self._is_valid_move(new_position,jet): # 软禁止飞机移动到敌方基地
                 reward += self._move(agent=agent,jet=jet,new_position=new_position)
             else:
                 reward -= 100
@@ -181,7 +199,7 @@ class CustomMilitaryEnv(AECEnv):
             else:
                 reward -= 100
         elif action == 4:  # 向上攻击
-            if self._is_valid_attack((jet[0] - 1, jet[1])):
+            if self._is_valid_attack((jet[0] - 1, jet[1])): # 软禁止飞机攻击非敌方地块
                 reward += self._attack(agent, jet, (-1, 0))
             else:
                 reward -= 100
@@ -201,17 +219,17 @@ class CustomMilitaryEnv(AECEnv):
             else:
                 reward -= 100
         elif action == 8:  # 补给燃油
-            if self._is_valid_supply_fuel(jet):
+            if self._is_valid_supply_fuel(jet): # 软禁止飞机在无燃油地块加油
                reward += self._supply_fuel(jet,agent)
             else:
                 reward -= 100
         elif action == 9:  # 补给弹药
-            if self._is_valid_supply_missiles(jet):
+            if self._is_valid_supply_missiles(jet): # 软禁止飞机在无弹药地块补给弹药
                 reward += self._supply_missiles(jet,agent)
             else:
                 reward -= 100
         elif action == 10:  # 无动作
-            if jet[FUEL] == 0:
+            if jet[FUEL] == 0: # 没油导致的不动，加负奖励
                 reward -= 10
 
         # 如果超过回合数限制，则所有战斗机都被剔除
@@ -230,7 +248,7 @@ class CustomMilitaryEnv(AECEnv):
         elif all(jet[FUEL] == 0
                  and jet[CAN_MOVE] == False
                  and self.state[BLUE_BASE_FUEL,jet[ROW],jet[COL]] <= 0
-                 for jet in self.jets):
+                 for jet in self.jets): # 所有战斗机都已经移动过且燃油耗尽，而且无法补给燃油，游戏结束
             # print(f"Turn:{self.turn},All jets have run out of fuel, you are the loser!")
             # self.render()
             self.truncations = {agent: True for agent in self.agents}
@@ -384,6 +402,8 @@ class CustomMilitaryEnv(AECEnv):
 
 
 def read_data_file(file_path):
+    # 记得把testcase里的那个地图删掉，只留数字信息
+    # 我把处理后的testcase扔到了testcase文件夹里
     with open(file_path, 'r') as file:
         lines = file.readlines()
 

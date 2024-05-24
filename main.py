@@ -92,7 +92,7 @@ if __name__ == "__main__":
         test_envs,
         exploration_noise=True
     )
-    train_collector.collect(n_step=64 * 10)
+    train_collector.collect(n_step=32 * 10)
 
 
     def save_best_fn(policy):

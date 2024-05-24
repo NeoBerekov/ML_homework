@@ -56,17 +56,32 @@ class CustomMilitaryEnv(AECEnv):
         self.rewards = {agent: 0 for agent in self.agents}
 
 
+        # self.observation_spaces = {
+        #     agent: spaces.Dict({
+        #         "observation": spaces.Box(low=-0.001, high=5000.0, shape=(8,map_size[0],map_size[1]), dtype=np.float32),
+        #
+        #         "action_mask": spaces.MultiBinary(11),
+        #
+        #         "position": spaces.Tuple((spaces.Discrete(map_size[0]), spaces.Discrete(map_size[1]))),
+        #
+        #         "fuel": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32),
+        #
+        #         "missile": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32)
+        #     }) for agent in self.agents
+        # }
         self.observation_spaces = {
             agent: spaces.Dict({
-                "observation": spaces.Box(low=-0.001, high=5000.0, shape=(8,map_size[0],map_size[1]), dtype=np.float32),
-
-                "action_mask": spaces.MultiBinary(11),
-
-                "position": spaces.Tuple((spaces.Discrete(map_size[0]), spaces.Discrete(map_size[1]))),
-
-                "fuel": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32),
-
-                "missile": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32)
+                "observation": spaces.Dict({
+                    "position": spaces.Tuple((
+                        spaces.Discrete(map_size[0]),
+                        spaces.Discrete(map_size[1])
+                    )),
+                    "fuel": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32),
+                    "missile": spaces.Box(low=-0.001, high=5000, shape=(1,), dtype=np.float32),
+                    "map_obs": spaces.Box(low=-0.001, high=5000.0, shape=(8, map_size[0], map_size[1]),
+                                                     dtype=np.float32)
+                }),
+                "action_mask": spaces.MultiBinary(11)
             }) for agent in self.agents
         }
         self.action_spaces = {
@@ -123,6 +138,7 @@ class CustomMilitaryEnv(AECEnv):
             self.state[JET_FUEL, jet[0], jet[1]] += jet[FUEL] # 燃油量
             self.state[JET_MISSILE, jet[0], jet[1]] += jet[MISSILE] # 导弹量
 
+
     def _convert_to_dict(self, list_of_rew):
         return dict(zip(self.possible_agents, list_of_rew))
     def reset(self,seed=None,options=None):
@@ -145,13 +161,16 @@ class CustomMilitaryEnv(AECEnv):
         self.rewards = {agent: 0 for agent in self.agents}
         self.temp_rewards = {agent: 0 for agent in self.agents}
 
+
     def observe(self, agent):
         # 目前是软控制飞机的合法动作，要是想硬控制可以调action_mask，在main里的TerminateIllegalWrapper会根据这个mask来判断是否合法
-        observation = {"observation": self.state,
+        observation = {"observation": {
+            "position": (self.jets[self.agents.index(agent)][0], self.jets[self.agents.index(agent)][1]),
+            "fuel": self.jets[self.agents.index(agent)][2],
+            "missile": self.jets[self.agents.index(agent)][3],
+            "map_obs": self.state,
+        },
                        "action_mask": np.ones(11, dtype=np.int8),
-                       "position": self.jets[self.agents.index(agent)][:2],
-                       "fuel": np.array([np.float32(self.jets[self.agents.index(agent)][FUEL])],dtype=np.float32),
-                       "missile": np.array([np.float32(self.jets[self.agents.index(agent)][MISSILE])],dtype=np.float32),
                        }
         return observation
 

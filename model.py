@@ -3,6 +3,7 @@ import numpy as np
 
 import torch
 from torch import nn
+from tianshou.data import Batch
 
 
 #  self.observation_spaces = {
@@ -24,8 +25,7 @@ class NetForRainbow(nn.Module):
                  map_depth,map_size,
                  state = None,
                  action_dim = 11,
-                 num_atoms = 51,
-                 device = "cpu"):
+                 num_atoms = 51):
         """
             Initialize the neural network.
 
@@ -39,9 +39,12 @@ class NetForRainbow(nn.Module):
             """
 
         super().__init__()
+        self.map_size = map_size
+        self.map_depth = map_depth
+        self.action_dim = action_dim
+        self.num_atoms = num_atoms
         if state is not None:
             self.state = state
-        self.device = device
         self.num_atoms = num_atoms
         self.conv = nn.Sequential(
             nn.Conv2d(map_depth, 32, 3, 1),
@@ -51,12 +54,12 @@ class NetForRainbow(nn.Module):
             nn.AdaptiveAvgPool2d((3, 3)),
             nn.Flatten(start_dim=1),
         )
-        self.position_embedding = nn.Embedding(map_size[0]*map_size[1], 8)
+        self.position_embedding = nn.Embedding(self.map_size[0]*self.map_size[1], 8)
         self.fuel_embedding = nn.Embedding(5000, 8)
         self.missile_embedding = nn.Embedding(5000, 8)
         self.attention = nn.MultiheadAttention(embed_dim=64, num_heads=8)
         self.decision_layer = nn.Sequential(
-            nn.Linear(64 * 9 + 8 * 3, 512),  # 更新维度以适应卷积输出和嵌入的结合
+            nn.Linear(576 + 8*3, 512), # 更新维度以适应卷积输出和嵌入的结合
             nn.ReLU(),
             nn.Linear(512, action_dim * num_atoms),
         )
@@ -81,7 +84,7 @@ class NetForRainbow(nn.Module):
             state: The state of the agent.(unused)
             info: Additional information about the agent.(unused)
         """
-        observation = obs["observation"]
+        observation = obs["map_obs"]
         position = obs["position"]
         fuel = obs["fuel"]
         missile = obs["missile"]
@@ -95,43 +98,59 @@ class NetForRainbow(nn.Module):
             missile = torch.tensor(missile, dtype=torch.float32)
         # 卷积层处理观测地图
         # todo: 增加一个通道，软编码地图的不可移动区块（如地方基地、边界外等）
+
         map_obs = self.conv(observation)
-        batch_size = map_obs.size(0)
-        map_obs = map_obs.view(batch_size, 64, 3 * 3).permute(2, 0, 1)  # 变换为(seq_length, batch_size, embed_dim)
-        # 应用自注意力机制
-        map_obs, _ = self.attention(map_obs, map_obs, map_obs)
-        map_obs = map_obs.permute(1, 0, 2).contiguous()  # 恢复(batch_size, seq_length, embed_dim)
-        map_obs = map_obs.view(batch_size, -1)  # 展平为(batch_size, embed_dim*seq_length)
+        position_idx = position[:, 0] * self.map_size[1] + position[:, 1]
+        pos_emb = self.position_embedding(position_idx).view(-1, 8)
+        fuel_emb = self.fuel_embedding(fuel.long().squeeze()).view(-1, 8)
+        missile_emb = self.missile_embedding(missile.long().squeeze()).view(-1, 8)
 
-        # 获取位置、燃油和导弹嵌入，并确保维度匹配
-        pos_emb = self.position_embedding(position).view(batch_size, -1)
-        fuel_emb = self.fuel_embedding(fuel.long().squeeze()).view(batch_size, -1)  # 确保燃油数值是整数并进行嵌入
-        missile_emb = self.missile_embedding(missile.long().squeeze()).view(batch_size, -1)  # 确保导弹数值是整数并进行嵌入
-
-        # 结合所有特征
+        # Concatenate all features
         combined = torch.cat([map_obs, pos_emb, fuel_emb, missile_emb], dim=1)
-        logits = self.decision_layer(combined).view(batch_size, self.num_atoms, -1)
-        logits = logits.permute(0, 2, 1)  # 调整维度为(batch_size, action_dim, num_atoms)
-        return logits,state,info
+        logits = self.decision_layer(combined).view(-1, self.action_dim, self.num_atoms)
+        return logits,state
 
+        # map_obs = self.conv(observation)
+        # batch_size = map_obs.size(0)
+        # map_obs = map_obs.view(batch_size, 64, 3 * 3).permute(2, 0, 1)  # 变换为(seq_length, batch_size, embed_dim)
+        # # 应用自注意力机制
+        # map_obs, _ = self.attention(map_obs, map_obs, map_obs)
+        # map_obs = map_obs.permute(1, 0, 2).contiguous()  # 恢复(batch_size, seq_length, embed_dim)
+        # map_obs = map_obs.view(batch_size, -1)  # 展平为(batch_size, embed_dim*seq_length)
+        #
+        # # 获取位置、燃油和导弹嵌入，并确保维度匹配
+        # pos_emb = self.position_embedding(position).view(batch_size, -1)
+        # fuel_emb = self.fuel_embedding(fuel.long().squeeze()).view(batch_size, -1)  # 确保燃油数值是整数并进行嵌入
+        # missile_emb = self.missile_embedding(missile.long().squeeze()).view(batch_size, -1)  # 确保导弹数值是整数并进行嵌入
+        #
+        # # 结合所有特征
+        # combined = torch.cat([map_obs, pos_emb, fuel_emb, missile_emb], dim=1)
+        # logits = self.decision_layer(combined).view(batch_size, self.num_atoms, -1)
+        # logits = logits.permute(0, 2, 1)  # 调整维度为(batch_size, action_dim, num_atoms)
 
-# 运行该文件可以测试
 if __name__ == "__main__":
     # 示例使用
     map_depth = 8
-    map_size = (10, 10)
-    state_dim = (map_depth, *map_size)
+    map_size = (6, 9)  # Height = 6, Width = 9
     action_dim = 11
     num_atoms = 51
 
     model = NetForRainbow(map_depth, map_size, action_dim=action_dim, num_atoms=num_atoms)
 
+    # 设置批量大小为10
+    batch_size = 10
+
     # 生成示例输入
-    observation = torch.randn(1, map_depth, map_size[0], map_size[1])  # 假设 batch size 为 1
-    position = torch.randint(0, map_size[0] * map_size[1], (1,))
-    fuel = torch.randint(0, 5000, (1,))
-    missile = torch.randint(0, 5000, (1,))
+    observation = torch.randn(batch_size, map_depth, map_size[0], map_size[1])  # Batch size = 10
+    # Generate position as (x, y) coordinates for each batch item
+    position_x = torch.randint(0, map_size[0], (batch_size,))  # Random x coordinates for batch
+    position_y = torch.randint(0, map_size[1], (batch_size,))  # Random y coordinates for batch
+    position = torch.stack((position_x, position_y), dim=1)  # Combine into a single tensor
+
+    fuel = torch.randint(0, 5000, (batch_size,))  # Fuel levels for each batch item
+    missile = torch.randint(0, 5000, (batch_size,))  # Missile counts for each batch item
+    obs = {"map_obs": observation, "position": position, "fuel": fuel, "missile": missile}
 
     # 通过网络前向传播
-    logits = model(observation, position, fuel, missile)
-    print(logits.shape)  # 应该输出 [1, 11, 51], 表示一个批次中的动作分布
+    logits, _, __ = model.forward(obs)
+    print(logits.shape)  # Expected to output [10, 11, 51], representing the action distribution for each batch item

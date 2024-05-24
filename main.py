@@ -1,21 +1,21 @@
 import os
-from typing import Optional, Tuple
 
-import gymnasium
 import numpy as np
 import torch
 from tianshou.data import Collector, VectorReplayBuffer
 from tianshou.env import DummyVectorEnv
 from tianshou.env.pettingzoo_env import PettingZooEnv
-from tianshou.policy import BasePolicy,RainbowPolicy, MultiAgentPolicyManager, RandomPolicy
+from tianshou.policy import RainbowPolicy, MultiAgentPolicyManager
 from tianshou.trainer import OffpolicyTrainer
-from tianshou.utils.net.common import Net
 
 from pettingzoo.utils import TerminateIllegalWrapper
 
 
 from pettingzoo_env import read_data_file, CustomMilitaryEnv
 from model import NetForRainbow
+
+from torch.utils.tensorboard import SummaryWriter
+from tianshou.utils import TensorboardLogger
 
 # 这个项目主要使用Pettingzoo和Tianshou库
 
@@ -35,28 +35,15 @@ def _get_env():
         )
     )
 
-# class NetForRainbow(nn.Module):
-#     def __init__(self,
-#                  map_depth,map_size,
-#                  state = None,
-#                  action_dim = 11,
-#                  num_atoms = 51,
-#                  device = "cpu"):
+
 def _get_agents(num_agents):
     env = _get_env()
-    observation_space = env.observation_space
-    map_observation_space = env.observation_space["observation"]
-    position_space = env.observation_space["position"]
-    fuel_space = env.observation_space["fuel"]
-    missile_space = env.observation_space["missile"]
-
-    action_space = env.action_space.shape or env.action_space.n
+    map_observation_space = env.observation_space["observation"]["map_obs"]
 
     net = NetForRainbow(
         map_depth=map_observation_space.shape[0],
         map_size=map_observation_space.shape[1:],
-        device=device
-    ).to(device)
+    ).to("cpu")
 
     optim = torch.optim.Adam(net.parameters(), lr=1e-4)
 
@@ -64,6 +51,8 @@ def _get_agents(num_agents):
     shared_policy = RainbowPolicy(
         model=net,
         optim=optim,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
         discount_factor=0.9,
         estimation_step=3,
         target_update_freq=320,
@@ -72,9 +61,14 @@ def _get_agents(num_agents):
         num_atoms=51
     )
     policies = [shared_policy for _ in range(num_agents)]
-    multiagent_policy = MultiAgentPolicyManager(policies, env)
+    multiagent_policy = MultiAgentPolicyManager(policies, env,observation_space=env.observation_space)
     return multiagent_policy, optim, env.agents
 
+
+# Logging
+writer = SummaryWriter(log_dir='./logs')
+logger = TensorboardLogger(writer)
+print("Logging to ./logs")
 
 
 if __name__ == "__main__":
@@ -114,7 +108,7 @@ if __name__ == "__main__":
 
 
     def stop_fn(mean_rewards):
-        return mean_rewards >= 10000  # 停止训练的条件，没细调，可能需要调整，感觉不太够
+        return mean_rewards >= 1  # 停止训练的条件，没细调，可能需要调整，感觉不太够
 
 
     def train_fn(epoch, env_step):
@@ -123,6 +117,7 @@ if __name__ == "__main__":
 
     def test_fn(epoch, env_step):
         policy.policies[agents[0]].set_eps(0.05)  # 测试时减少探索
+
 
 
     result = OffpolicyTrainer(
@@ -140,7 +135,8 @@ if __name__ == "__main__":
         save_best_fn=save_best_fn,
         stop_fn=stop_fn,
         train_fn=train_fn,
-        test_fn=test_fn
+        test_fn=test_fn,
+        logger=logger,
     ).run()
 
     print(f"\n==========Result==========\n{result}")

@@ -25,7 +25,8 @@ class NetForRainbow(nn.Module):
                  map_depth,map_size,
                  state = None,
                  action_dim = 11,
-                 num_atoms = 51):
+                 num_atoms = 51,
+                 device = "cpu"):
         """
             Initialize the neural network.
 
@@ -43,6 +44,7 @@ class NetForRainbow(nn.Module):
         self.map_depth = map_depth
         self.action_dim = action_dim
         self.num_atoms = num_atoms
+        self.device = device
         if state is not None:
             self.state = state
         self.num_atoms = num_atoms
@@ -99,6 +101,11 @@ class NetForRainbow(nn.Module):
         # 卷积层处理观测地图
         # todo: 增加一个通道，软编码地图的不可移动区块（如地方基地、边界外等）
 
+        observation = observation.to(self.device)
+        position = position.to(self.device)
+        fuel = fuel.to(self.device)
+        missile = missile.to(self.device)
+
         map_obs = self.conv(observation)
         position_idx = position[:, 0] * self.map_size[1] + position[:, 1]
         pos_emb = self.position_embedding(position_idx).view(-1, 8)
@@ -108,7 +115,7 @@ class NetForRainbow(nn.Module):
         # Concatenate all features
         combined = torch.cat([map_obs, pos_emb, fuel_emb, missile_emb], dim=1)
         logits = self.decision_layer(combined).view(-1, self.action_dim, self.num_atoms)
-        return logits,state
+        return logits.to("cpu"),state
 
         # map_obs = self.conv(observation)
         # batch_size = map_obs.size(0)

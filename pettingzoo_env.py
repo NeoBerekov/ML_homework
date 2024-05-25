@@ -165,9 +165,11 @@ class CustomMilitaryEnv(AECEnv):
     def observe(self, agent):
         # 目前是软控制飞机的合法动作，要是想硬控制可以调action_mask，在main里的TerminateIllegalWrapper会根据这个mask来判断是否合法
         observation = {"observation": {
-            "position": (self.jets[self.agents.index(agent)][0], self.jets[self.agents.index(agent)][1]),
-            "fuel": self.jets[self.agents.index(agent)][2],
-            "missile": self.jets[self.agents.index(agent)][3],
+            "position": tuple([self.jets[self.agents.index(agent)][ROW], self.jets[self.agents.index(agent)][COL]]),
+            "fuel": np.array([self.jets[self.agents.index(agent)][FUEL]]).astype(np.float32),
+            "missile": np.array([self.jets[self.agents.index(agent)][MISSILE]]).astype(np.float32),
+            # "fuel": np.float32(self.jets[self.agents.index(agent)][FUEL]),
+            # "missile": np.float32(self.jets[self.agents.index(agent)][MISSILE]),
             "map_obs": self.state,
         },
                        "action_mask": np.ones(11, dtype=np.int8),
@@ -273,7 +275,7 @@ class CustomMilitaryEnv(AECEnv):
             self.truncations = {agent: True for agent in self.agents}
 
         # 如果所有战斗机都已经移动过，则进入下一个回合，恢复所有战斗机的移动状态
-        if all(jet[4] == False for jet in self.jets):
+        if all(jet[CAN_MOVE] == False for jet in self.jets):
             # print("All jets have moved, next turn")
             self.turn += 1
             # 使得所有战斗机都能移动
@@ -454,7 +456,7 @@ def read_data_file(file_path):
     for _ in range(jets_count):
         row, col, max_fuel, max_missile = map(int, lines[index].strip().split())
         fuel, missile = 0, 0
-        can_move = True
+        can_move = fuel!=0
         jets.append([row, col, fuel, missile, can_move, max_fuel, max_missile])
         index += 1
 

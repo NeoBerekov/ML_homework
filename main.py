@@ -103,6 +103,7 @@ if __name__ == "__main__":
         exploration_noise=True
     )
     train_collector.collect(n_step=32 * 10)
+    train_collector.reset()
 
 
     def save_best_fn(policy):

@@ -261,8 +261,8 @@ class CustomMilitaryEnv(AECEnv):
         info = {"turn": self.turn, "action": action, "rew": reward,"fuel": jet[FUEL],"missile": jet[MISSILE]}
 
         if np.all(self.state[RED_BASE_DEFENSE] == 0):
-            # print(f"Turn:{self.turn},All red bases have been destroyed, you are the winner!")
-            # print("last hit by: ", agent)
+            print(f"Turn:{self.turn},All red bases have been destroyed, you are the winner!")
+            print("last hit by: ", agent)
             # self.render()
             self.terminations = {agent: True for agent in self.agents}
 

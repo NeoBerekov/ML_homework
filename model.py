@@ -61,9 +61,9 @@ class NetForRainbow(nn.Module):
         self.missile_embedding = nn.Embedding(5000, 8)
         self.attention = nn.MultiheadAttention(embed_dim=64, num_heads=8)
         self.decision_layer = nn.Sequential(
-            nn.Linear(576 + 8*3, 512), # 更新维度以适应卷积输出和嵌入的结合
+            nn.Linear(576 + 8*3, 1024), # 更新维度以适应卷积输出和嵌入的结合
             nn.ReLU(),
-            nn.Linear(512, action_dim * num_atoms),
+            nn.Linear(1024, action_dim * num_atoms),
         )
 
     def forward(self, obs,state=None,info=None):

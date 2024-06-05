@@ -39,7 +39,7 @@ ACT_NO_OP = 10
 class CombatEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, map_size, blue_bases, red_bases, jets,local_obs_window=5,max_turns=1000):
+    def __init__(self, map_size, blue_bases, red_bases, jets,local_obs_window=5,max_turns=5000,boundary_gradient=10):
         super().__init__()
 
         self.map_size = map_size  # 地图大小 (rows, cols)
@@ -48,7 +48,9 @@ class CombatEnv(gym.Env):
         self.local_obs_window = local_obs_window  # 局部观察窗口大小,n*n
         self.num_red_bases = len(red_bases)  # 红方基地数量
         self.destroyed_red_bases = 0  # 被摧毁的红方基地数量
+        self.points = 0  # 红方基地价值
         self.no_op_steps = 0  # 无动作步数
+        self.border_gradient = min(min(map_size[0],map_size[1])/2-1,boundary_gradient) # 边界梯度
         self.jets = copy.deepcopy(jets) # 战斗机信息
         self.original_jets = copy.deepcopy(jets)
         self.current_jet = 0  # 当前战斗机索引
@@ -74,8 +76,12 @@ class CombatEnv(gym.Env):
     def create_action_mask(self):
         action_mask = np.zeros(11, dtype=np.int16)
         jet = self.jets[self.current_jet]
-        if jet[FUEL] > 0 and jet[CAN_MOVE]:
+        if ((jet[FUEL] > 0 and jet[CAN_MOVE])
+                and not (jet[FUEL] <= 3 and self.global_state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] > 0)
+                and not (jet[MISSILE] <= 0 and self.global_state[BLUE_BASE_MISSILE, jet[ROW], jet[COL]] > 0)):
             # 如果战斗机燃油量大于0,本回合未移动且对应的方向上没有红方基地，则可以移动
+            # 增补1：如果战斗机燃油量小于3，且在蓝方基地上，有燃油补给，则不能移动，因为这样大概率会导致死亡
+            # 增补2：如果战斗机导弹量为0，且在蓝方基地上，有弹药补给，则此时也不能移动，鼓励战斗机补给导弹
             if jet[ROW] > 0 and self.global_state[RED_BASE_DEFENSE, jet[ROW] - 1, jet[COL]] == 0:
                 action_mask[ACT_MOVE_UP] = 1
             if jet[ROW] < self.map_size[0] - 1 and self.global_state[RED_BASE_DEFENSE, jet[ROW] + 1, jet[COL]] == 0:
@@ -94,9 +100,9 @@ class CombatEnv(gym.Env):
                 action_mask[ACT_ATTACK_LEFT] = 1
             if jet[COL] < self.map_size[1] - 1 and self.global_state[RED_BASE_DEFENSE, jet[ROW], jet[COL] + 1] > 0:
                 action_mask[ACT_ATTACK_RIGHT] = 1
-        if self.global_state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] > 0:
+        if self.global_state[BLUE_BASE_FUEL, jet[ROW], jet[COL]] > 0 and jet[FUEL] < jet[MAX_FUEL]:
             action_mask[ACT_SUPPLY_FUEL] = 1
-        if self.global_state[BLUE_BASE_MISSILE, jet[ROW], jet[COL]] > 0:
+        if self.global_state[BLUE_BASE_MISSILE, jet[ROW], jet[COL]] > 0 and jet[MISSILE] < jet[MAX_MISSILE] and jet[FUEL] != 0:
             action_mask[ACT_SUPPLY_MISSILES] = 1
         action_mask[ACT_NO_OP] = 0
         return action_mask
@@ -122,6 +128,9 @@ class CombatEnv(gym.Env):
 
         self.global_state = np.zeros((9, self.map_size[0], self.map_size[1]), dtype=np.int16)
         self.jets = copy.deepcopy(self.original_jets)
+        # 为每个战斗机随机分配到一个蓝方基地上作为初始位置
+        for jet in self.jets:
+            jet[ROW], jet[COL] = self.blue_bases[np.random.randint(0, len(self.blue_bases))][0:2]
 
         for base in self.blue_bases:
             assert 0 <= base[0] < self.map_size[0], "蓝方基地行索引超出范围"
@@ -147,12 +156,11 @@ class CombatEnv(gym.Env):
             self.global_state[JET_MISSILE, jet[0], jet[1]] += jet[MISSILE] # 导弹量
 
         # 创建梯度地图
-        self.global_state[BOUNDARY_GRADIENT] = self.create_gradient_map(3)
+        self.global_state[BOUNDARY_GRADIENT] = self.create_gradient_map(self.border_gradient)
 
 
         self.terminated = False  # 游戏是否结束
         self.truncated = False  # 是否截断游戏
-        # self.reward = 0
         self.turn = 0
         self.turn_step = 0
         self.total_step = 0
@@ -161,6 +169,7 @@ class CombatEnv(gym.Env):
         self.current_jet = 0
         self.illegal_moves = 0
         self.no_op_steps = 0
+        self.points = 0
 
 
         return {
@@ -262,7 +271,7 @@ class CombatEnv(gym.Env):
             jet[COL] = new_pos[1]
             jet[FUEL] -= 1
             jet[CAN_MOVE] = False
-            return -1
+            return -(self.global_state[BOUNDARY_GRADIENT, new_pos[0], new_pos[1]]+0.1)
 
     def attack(self,jet_index, position):
         jet = self.jets[jet_index]
@@ -285,14 +294,17 @@ class CombatEnv(gym.Env):
         jet[MISSILE] -= missile_used
         self.global_state[JET_MISSILE, jet[ROW], jet[COL]] -= missile_used
         self.global_state[RED_BASE_DEFENSE, position[0], position[1]] -= missile_used
-        reward += missile_used
+        reward += 5 * missile_used
+        print(f"Turn {self.turn} {missile_used} shots fired.")
         # 如果摧毁了基地，更新基地价值，附加对应奖励
         if self.global_state[RED_BASE_DEFENSE, position[0], position[1]] <= 0:
             self.destroyed_red_bases += 1
+            print(f"Turn {self.turn} Red Base at ({position[0]},{position[1]}) destroyed, "
+                  f"value:{self.global_state[RED_BASE_VALUE, position[0], position[1]]}, "
+                  f"Bases already destroyed:{self.destroyed_red_bases}")
             reward += 10 * self.global_state[RED_BASE_VALUE, position[0], position[1]]
+            self.points += self.global_state[RED_BASE_VALUE, position[0], position[1]]
             self.global_state[RED_BASE_VALUE, position[0], position[1]] = 0
-            print(f"Turn {self.turn}")
-            print("Red base at ({}, {}) has been destroyed".format(position[0], position[1]))
         return reward
 
     def supply(self,jet_index, position, supply_type):
@@ -319,6 +331,9 @@ class CombatEnv(gym.Env):
             self.global_state[JET_FUEL, jet[ROW], jet[COL]] += fuel_supplied
             self.global_state[BLUE_BASE_FUEL, position[0], position[1]] -= fuel_supplied
             reward += fuel_supplied/10
+            print(f"Turn {self.turn} {fuel_supplied} fuel supplied.")
+            if self.global_state[BLUE_BASE_FUEL, position[0], position[1]] <= 0:
+                print(f"Blue Base at ({position[0]},{position[1]}) has run out of fuel.")
         # 补给导弹
         elif supply_type == ACT_SUPPLY_MISSILES:
             # 计算补给导弹数量
@@ -327,7 +342,12 @@ class CombatEnv(gym.Env):
             jet[MISSILE] += missile_supplied
             self.global_state[JET_MISSILE, jet[ROW], jet[COL]] += missile_supplied
             self.global_state[BLUE_BASE_MISSILE, position[0], position[1]] -= missile_supplied
-            reward += missile_supplied/10
+            reward += missile_supplied/2
+            print(f"Turn {self.turn} {missile_supplied} missiles supplied.")
+            if self.global_state[BLUE_BASE_MISSILE, position[0], position[1]] <= 0:
+                print(f"Blue Base at ({position[0]},{position[1]}) has run out of missiles.")
+        assert jet[FUEL] <= jet[MAX_FUEL], "战斗机燃油量超出最大值"
+        assert jet[MISSILE] <= jet[MAX_MISSILE], "战斗机导弹量超出最大值"
         return reward
 
     def execute_action(self, jet_index, action):
@@ -389,25 +409,23 @@ class CombatEnv(gym.Env):
         # 判断游戏是否结束
         self.terminated = self.check_termination()
         if self.terminated:
-            print(f"Turn {self.turn} Total step:{self.total_step} Red Base destroyed:{self.destroyed_red_bases} No op steps:{self.no_op_steps}\n"
+            print(f"Turn {self.turn} Total step:{self.total_step} Red Base destroyed:{self.destroyed_red_bases} points:{self.points} \nNo op steps:{self.no_op_steps}\n"
                   f"Legal:Illegal = {self.total_step}:{self.illegal_moves} \n"
-                  f"Win! all red bases have been destroyed")
+                  f"Win! all red bases have been destroyed, Turn{self.turn}")
             self.render()
-            reward += 1000
 
         # 判断游戏是否截断
         self.truncated = self.check_truncation()
         if self.truncated:
-            print(f"Turn {self.turn} Total step:{self.total_step} Red Base destroyed:{self.destroyed_red_bases} No op steps:{self.no_op_steps} \n"
+            print(f"Turn {self.turn} Total step:{self.total_step} Red Base destroyed:{self.destroyed_red_bases} points:{self.points} \nNo op steps:{self.no_op_steps} \n"
                   f"Legal:Illegal = {self.total_step}:{self.illegal_moves} \n"
-                  f"Lose! max turns reached or all jets have no fuel and not in blue base")
+                  f"Lose! max turns reached or all jets have no fuel and not in blue base, Turn{self.turn}")
             self.render()
-            reward -= 1000
 
 
         # 在战斗机执行移动动作后，切换到下一个战斗机
-        if action == ACT_NO_OP:
-            assert not jet[CAN_MOVE], "战斗机没有合法动作，但是CAN_MOVE标志为True"
+        if action == ACT_NO_OP or jet[FUEL] <= 0 or jet[CAN_MOVE] == False:
+            # assert not jet[CAN_MOVE], f"战斗机没有合法动作，但是CAN_MOVE标志为True, jet:{jet}, action:{action}, fuel:{jet[FUEL]}, missile:{jet[MISSILE]}"
             self.current_jet = (self.current_jet + 1) % len(self.jets)
 
         # 更新回合数
@@ -427,18 +445,19 @@ class CombatEnv(gym.Env):
             "local_obs": local_obs,
             "global_obs": self.global_state,
             'action_mask': self.create_action_mask()
-        }, reward, self.terminated, self.truncated,{}
+        }, reward, self.terminated, self.truncated, {"points": self.points}
 
     def render(self):
-        print(f"Jets' position: {[(jet[ROW], jet[COL]) for jet in self.jets]}")
+        print(f"Jets' position: {[(jet[ROW], jet[COL]) for jet in self.jets]}, fuel: {[jet[FUEL] for jet in self.jets]}, missile: {[jet[MISSILE] for jet in self.jets]}")
         for row in range(self.map_size[0]):
             for col in range(self.map_size[1]):
                 if self.global_state[JET_POSITION,row,col] > 0:
-                    print(f"{self.global_state[JET_POSITION,row,col]}", end=" ")
+                    # print(f"{self.global_state[JET_POSITION,row,col]}", end=" ")
+                    print(f"\033[92m{self.global_state[JET_POSITION,row,col]}\033[0m", end=" ")
                 elif self.global_state[RED_BASE_DEFENSE,row,col] > 0:
-                    print("R", end=" ")
+                    print(f"\033[91mR\033[0m", end=" ")
                 elif self.global_state[BLUE_BASE_FUEL,row,col] > 0 or self.global_state[BLUE_BASE_MISSILE,row,col] > 0:
-                    print("B", end=" ")
+                    print(f"\033[94mB\033[0m", end=" ")
                 else:
                     print(".", end=" ")
             print()

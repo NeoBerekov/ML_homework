@@ -4,20 +4,19 @@ import numpy as np
 import torch
 from tianshou.data import Collector, VectorReplayBuffer
 from tianshou.env import DummyVectorEnv
-from tianshou.env.pettingzoo_env import PettingZooEnv
+from tianshou.env.gym_wrappers import
 from tianshou.policy import RainbowPolicy, MultiAgentPolicyManager,C51Policy
 from tianshou.trainer import offpolicy_trainer
 
 from pettingzoo.utils import TerminateIllegalWrapper
 
 
-from pettingzoo_env import read_data_file, CustomMilitaryEnv
+from gymnasium_env import CombatEnv,read_data_file
 from model import NetForRainbow
 
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 
-# 这个项目主要使用Pettingzoo和Tianshou库
 
 
 # 读test文件
@@ -28,12 +27,7 @@ print(f"Using device: {device}")
 
 def _get_env():
     """This function is needed to provide callables for DummyVectorEnv."""
-    return PettingZooEnv(
-        TerminateIllegalWrapper(
-            CustomMilitaryEnv(map_size,blue_bases,red_bases,jets),
-            illegal_reward=-10000
-        )
-    )
+    return
 
 
 def _get_agents(num_agents):

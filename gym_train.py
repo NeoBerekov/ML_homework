@@ -60,7 +60,7 @@ class ReplayBuffer:
         return len(self.buffer)
 
 class DQNAgent:
-    def __init__(self, map_size, map_depth, num_actions,local_obs_window, replay_buffer_capacity=10000, batch_size=128, lr=1e-3, gamma=0.99):
+    def __init__(self, map_size, map_depth, num_actions,local_obs_window,replay_buffer_capacity=100000, batch_size=1024, lr=1e-4, gamma=0.99):
         self.map_size = map_size
         self.map_depth = map_depth
         self.num_actions = num_actions
@@ -108,7 +108,7 @@ class DQNAgent:
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train(self):
-        if len(self.replay_buffer) < self.batch_size:
+        if len(self.replay_buffer) < self.batch_size * 4:
             return
 
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
@@ -133,37 +133,47 @@ class DQNAgent:
         self.optimizer.step()
         self.steps += 1
 
-        if self.steps % 100 == 0:
+        if self.steps % 4000 == 0:
             self.update_target_model()
 
 
-map_size,blue_bases,red_bases,jets = read_data_file("testcase/test2.txt")
+map_size,blue_bases,red_bases,jets = read_data_file("testcase/test1.txt")
 map_depth = 9
 num_actions = 11
-local_obs_window = 7
+local_obs_window = 11
+boundary_gradient = 10
+max_turns = 50
 # 初始化环境
-env = CombatEnv(map_size, blue_bases, red_bases, jets, local_obs_window=local_obs_window)
+env = CombatEnv(map_size, blue_bases, red_bases, jets,
+                local_obs_window=local_obs_window,
+                boundary_gradient=boundary_gradient,
+                max_turns=max_turns,
+                )
 agent = DQNAgent(map_size=map_size, map_depth=map_depth, num_actions=num_actions,local_obs_window=local_obs_window)
 
 # 训练
-num_episodes = 100
+num_episodes = 200
 state = env.reset()
 best_reward = -np.inf
 for episode in range(num_episodes):
     state = env.reset()
     done = False
     total_reward = 0
+    epsilon = 1
+    count = 0
     while not done:
-        epsilon = max(0.001, 0.9 - episode / 80)
+        epsilon = max(0.1, 0.9 - episode / 120)
         action = agent.act(state, epsilon)
         next_state, reward, terminated,truncated,_ = env.step(action)
         done = terminated or truncated
-        if action != ACT_NO_OP:
-            agent.replay_buffer.push(state, action, reward, next_state, done)
+        # if action != ACT_NO_OP and count % 10 == 0:
+        #     agent.replay_buffer.push(state, action, reward, next_state, done)
+        agent.replay_buffer.push(state, action, reward, next_state, done)
         state = next_state
         total_reward += reward
         agent.train()
+        count += 1
     if total_reward > best_reward:
         best_reward = total_reward
-    print(f"Episode {episode}, total reward: {total_reward}, buffer size: {len(agent.replay_buffer)} \n")
+    print(f"Episode {episode}, total reward: {total_reward}, epsilon:{epsilon}, \nbuffer size: {len(agent.replay_buffer)} \n")
 print(f"Best reward: {best_reward}")
